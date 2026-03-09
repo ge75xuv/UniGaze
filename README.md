@@ -34,6 +34,8 @@ This repository contains the official PyTorch implementation of both **MAE pre-t
 - :white_check_mark: (2025 June 08 updated) Release the MAE pre-training code.
 - :white_check_mark: (2025 August 25 updated) Online demo is available.
 - :white_check_mark: Easier pip installation.
+- :white_check_mark: (2026 March updated) Release the gaze dataset normalization code.
+
 
 ---
 
