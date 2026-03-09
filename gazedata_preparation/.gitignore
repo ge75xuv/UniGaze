@@ -62,17 +62,5 @@ __pycache__/
 *.log
 *.sh
 
-configs/data_path.yaml
-
-!assets/*.jpg
-!configs/trainer/figs/*.jpg
-!configs/trainer/figs/*.png
-!assets/figs/*/*
-!data/face_model.txt
-batch_log*/
-
-scripts/
-*out
-*_nodeinfo
-
-outputs/
+!gaze360_example.jpg
+!face_model.txt
