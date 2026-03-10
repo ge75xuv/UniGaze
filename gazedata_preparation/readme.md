@@ -52,6 +52,12 @@ python normalize_mpii.py \
     --output_dir <output_dir>
 ```
 
+Then, run the following script to upsample each subject to exactly 3,000 samples via random duplication
+```bash
+python upsample_mpii.py \
+    --data_dir <output_dir>
+```
+
 ---
 
 ## 3. EYEDIAP (`normalize_eyediap.py`)
@@ -62,6 +68,19 @@ That implementation utilized a **TensorFlow 1.x framework** and 3DMM-based head 
 
 In this repository, we provide a simplified, modern implementation of the gaze normalization process consistent with the ETH-XGaze pipeline. 
 Note that the processed data is slightly different from the one used in the paper.
+
+
+### Raw Data Structure
+```yaml
+path/to/raw/EYEDIAP/
+├── Annotations/
+├── Data/
+├── Example/
+├── MD5SUM.TXT
+├── Metadata/
+├── Readme.txt
+└── Scripts/
+```
 
 ### Execution
 ```bash
@@ -125,8 +144,16 @@ python normalize_gaze360.py \
 
 ## These normalization parameters are empirically adjusted to ensure that the facial region scope is similar to other datasets.
 ```
-
-
 **Example: Original Crop (left) vs. Normalized Patch (right)**
 
 <img src="gaze360_example.jpg" width=500>
+
+
+## Finally, Data Check
+
+To verify the processed datasets and visualize the gaze vectors, use the provided reading script:
+
+```bash
+python read_data.py \
+    --data_dir <path to the processed dataset>
+```
