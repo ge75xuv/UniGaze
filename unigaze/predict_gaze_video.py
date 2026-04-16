@@ -106,6 +106,7 @@ def get_parser(**parser_kwargs):
 	parser.add_argument(
 		"--write_image", help="whether to write the images", default=False, type=str2bool,
 	)
+	# === ADDED: LookAt/NotLookAt Classifier Parameters ===
 	parser.add_argument(
 		"--lookat_angle_enter", help="angle threshold (deg) to enter LookAt", default=8.0, type=float,
 	)
@@ -124,6 +125,7 @@ def get_parser(**parser_kwargs):
 	parser.add_argument(
 		"--draw_angle", help="whether to draw smoothed angle on frame", default=True, type=str2bool,
 	)
+	# === END: LookAt/NotLookAt Classifier Parameters ===
 	
 	return parser
 
@@ -235,20 +237,24 @@ if __name__ == "__main__":
 		print(log_info)
 
 		save_freq = 30
-		angle_enter = float(args.lookat_angle_enter)
-		angle_exit = float(args.lookat_angle_exit)
+		
+		# === ADDED: LookAt Classifier Initialization ===
+		# Extract and validate threshold parameters
+		angle_enter = float(args.lookat_angle_enter)  # Angle threshold to enter LookAt state (degrees)
+		angle_exit = float(args.lookat_angle_exit)    # Angle threshold to exit LookAt state (degrees)
 		if angle_exit < angle_enter:
-			angle_exit = angle_enter
-		smooth_window = max(1, int(args.lookat_smooth_window))
-		ref_frames = max(1, int(args.lookat_ref_frames))
-		hold_missed = max(0, int(args.lookat_hold_missed))
+			angle_exit = angle_enter  # Ensure exit threshold >= enter threshold
+		smooth_window = max(1, int(args.lookat_smooth_window))  # Window size for moving average
+		ref_frames = max(1, int(args.lookat_ref_frames))        # Number of frames to build reference gaze
+		hold_missed = max(0, int(args.lookat_hold_missed))      # Frames to hold label during face detection failures
 
-		# Online LookAt classifier state.
-		reference_gaze_vec = None
-		reference_buffer = []
-		angle_history = []
-		is_lookat = True
-		missed_counter = 0
+		# Online LookAt classifier state: accumulates gaze vectors and maintains current label
+		reference_gaze_vec = None     # Reference 3D gaze direction from first frames (normalized)
+		reference_buffer = []         # Buffer of gaze vectors from initial frames
+		angle_history = []            # Rolling history of angular distances to reference
+		is_lookat = True              # Current LookAt state (initialized to True as first frame should be LookAt)
+		missed_counter = 0            # Counter for consecutive frames with failed face detection
+		# === END: LookAt Classifier Initialization ===
 
 		frame_idx = 0
 		pbar = tqdm(total=num_frames)
@@ -265,15 +271,18 @@ if __name__ == "__main__":
 			
 			image_resize = cv2.cvtColor(image_resize, cv2.COLOR_BGR2RGB)
 			preds = fa.get_landmarks(image_resize)
-			has_valid_gaze = False
-			frame_angle_smooth = None
+			# === ADDED: Per-frame classifier state variables ===
+			has_valid_gaze = False        # Flag: whether gaze was successfully estimated in this frame
+			frame_angle_smooth = None     # Smoothed angular distance to reference (None if no valid gaze)
+			# === END: Per-frame state variables ===
 
 
 			if preds is not None:
 				landmarks_record = {}
 				vector_start_end_point_list = {}
 				bbox_record = {}
-				gaze_vec_record = {}
+				# === ADDED: Dictionary to store denormalized gaze vectors for LookAt classification ===
+				gaze_vec_record = {}  # Maps face idx -> 3D gaze vector in camera coordinates
 				
 				for idx in range(len(preds)):
 					color = arrow_colors[idx % len(arrow_colors)]
@@ -367,7 +376,8 @@ if __name__ == "__main__":
 					vector_end_point = (int(result[1][0]), int(result[1][1]))
 
 					vector_start_end_point_list[idx] = (vector_start_point, vector_end_point)
-					gaze_vec_record[idx] = pred_gaze_cancel_nor.reshape(3)
+					# === ADDED: Store denormalized 3D gaze vector for LookAt classification ===
+					gaze_vec_record[idx] = pred_gaze_cancel_nor.reshape(3)  # 3D gaze in camera coordinates
 					landmarks_record[idx] = landmarks_in_original
 					# bbox_record[idx] = (x_min, y_min, x_max, y_max)
 
@@ -409,36 +419,51 @@ if __name__ == "__main__":
 					selected_gaze_vec = gaze_vec_record[selected_idx]
 					has_valid_gaze = True
 
+					# Stage 1: Build reference gaze from first frames
 					if reference_gaze_vec is None:
 						reference_buffer.append(selected_gaze_vec)
+						# Once we have enough frames, average them to create a stable reference
 						if len(reference_buffer) >= ref_frames:
 							reference_gaze_vec = np.mean(np.stack(reference_buffer, axis=0), axis=0)
 							reference_gaze_vec = reference_gaze_vec / np.linalg.norm(reference_gaze_vec)
 						is_lookat = True
 					else:
+						# Stage 2: Classify each frame by comparing to reference
+						# Compute angular distance between current and reference gaze
 						dot_val = np.clip(np.dot(selected_gaze_vec, reference_gaze_vec), -1.0, 1.0)
-						frame_angle = np.degrees(np.arccos(dot_val))
+						frame_angle = np.degrees(np.arccos(dot_val))  # Angular distance in degrees
+						# Apply moving average smoothing to reduce flickering
 						angle_history.append(frame_angle)
-						angle_history = angle_history[-smooth_window:]
+						angle_history = angle_history[-smooth_window:]  # Keep last N angles
 						frame_angle_smooth = float(np.mean(angle_history))
 
+						# Stage 3: Apply hysteresis thresholds to prevent rapid toggling
 						if is_lookat:
+							# In LookAt state: exit only if angle exceeds exit threshold
 							if frame_angle_smooth > angle_exit:
 								is_lookat = False
 						else:
+							# In NotLookAt state: enter only if angle drops below enter threshold
 							if frame_angle_smooth < angle_enter:
 								is_lookat = True
 
+					# Reset missed counter since we got a valid gaze
 					missed_counter = 0
 
+			# === ADDED: Handle frames where face detection failed ===
 			if not has_valid_gaze:
 				missed_counter += 1
+				# After too many missed frames, switch to NotLookAt
 				if missed_counter > hold_missed:
 					is_lookat = False
+			# === END: Handle face detection failures ===
 
+			# === ADDED: Visualize LookAt/NotLookAt label on video frame ===
 			label_text = "LookAt" if is_lookat else "NotLookAt"
-			label_color = (60, 210, 60) if is_lookat else (40, 60, 235)
+			label_color = (60, 210, 60) if is_lookat else (40, 60, 235)  # Green for LookAt, Red for NotLookAt
+			# Draw main label in top-left corner
 			cv2.putText(image_original, label_text, (30, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, label_color, 3, cv2.LINE_AA)
+			# Optionally draw the smoothed angle value for debugging/tuning
 			if args.draw_angle and frame_angle_smooth is not None:
 				cv2.putText(
 					image_original,
@@ -450,6 +475,7 @@ if __name__ == "__main__":
 					2,
 					cv2.LINE_AA,
 				)
+			# === END: Visualize classification result ===
 	
 
 				if write_image or frame_idx % save_freq == 0:
