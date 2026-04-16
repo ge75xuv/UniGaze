@@ -106,6 +106,24 @@ def get_parser(**parser_kwargs):
 	parser.add_argument(
 		"--write_image", help="whether to write the images", default=False, type=str2bool,
 	)
+	parser.add_argument(
+		"--lookat_angle_enter", help="angle threshold (deg) to enter LookAt", default=8.0, type=float,
+	)
+	parser.add_argument(
+		"--lookat_angle_exit", help="angle threshold (deg) to exit LookAt", default=12.0, type=float,
+	)
+	parser.add_argument(
+		"--lookat_smooth_window", help="moving-average window size for gaze angle", default=5, type=int,
+	)
+	parser.add_argument(
+		"--lookat_ref_frames", help="number of initial valid frames used to build reference gaze", default=3, type=int,
+	)
+	parser.add_argument(
+		"--lookat_hold_missed", help="number of missed-face frames to keep previous label", default=3, type=int,
+	)
+	parser.add_argument(
+		"--draw_angle", help="whether to draw smoothed angle on frame", default=True, type=str2bool,
+	)
 	
 	return parser
 
@@ -217,6 +235,20 @@ if __name__ == "__main__":
 		print(log_info)
 
 		save_freq = 30
+		angle_enter = float(args.lookat_angle_enter)
+		angle_exit = float(args.lookat_angle_exit)
+		if angle_exit < angle_enter:
+			angle_exit = angle_enter
+		smooth_window = max(1, int(args.lookat_smooth_window))
+		ref_frames = max(1, int(args.lookat_ref_frames))
+		hold_missed = max(0, int(args.lookat_hold_missed))
+
+		# Online LookAt classifier state.
+		reference_gaze_vec = None
+		reference_buffer = []
+		angle_history = []
+		is_lookat = True
+		missed_counter = 0
 
 		frame_idx = 0
 		pbar = tqdm(total=num_frames)
@@ -233,12 +265,15 @@ if __name__ == "__main__":
 			
 			image_resize = cv2.cvtColor(image_resize, cv2.COLOR_BGR2RGB)
 			preds = fa.get_landmarks(image_resize)
+			has_valid_gaze = False
+			frame_angle_smooth = None
 
 
 			if preds is not None:
 				landmarks_record = {}
 				vector_start_end_point_list = {}
 				bbox_record = {}
+				gaze_vec_record = {}
 				
 				for idx in range(len(preds)):
 					color = arrow_colors[idx % len(arrow_colors)]
@@ -332,6 +367,7 @@ if __name__ == "__main__":
 					vector_end_point = (int(result[1][0]), int(result[1][1]))
 
 					vector_start_end_point_list[idx] = (vector_start_point, vector_end_point)
+					gaze_vec_record[idx] = pred_gaze_cancel_nor.reshape(3)
 					landmarks_record[idx] = landmarks_in_original
 					# bbox_record[idx] = (x_min, y_min, x_max, y_max)
 
@@ -363,6 +399,57 @@ if __name__ == "__main__":
 							image_original, vector_start_point, vector_end_point, layer_color, thickness_values[i],
 							cv2.LINE_AA, tipLength=0.2
 						)
+
+				if len(gaze_vec_record) > 0:
+					# Use the largest detected face as the subject of interest.
+					selected_idx = max(
+						bbox_record,
+						key=lambda k: (bbox_record[k][2] - bbox_record[k][0]) * (bbox_record[k][3] - bbox_record[k][1])
+					)
+					selected_gaze_vec = gaze_vec_record[selected_idx]
+					has_valid_gaze = True
+
+					if reference_gaze_vec is None:
+						reference_buffer.append(selected_gaze_vec)
+						if len(reference_buffer) >= ref_frames:
+							reference_gaze_vec = np.mean(np.stack(reference_buffer, axis=0), axis=0)
+							reference_gaze_vec = reference_gaze_vec / np.linalg.norm(reference_gaze_vec)
+						is_lookat = True
+					else:
+						dot_val = np.clip(np.dot(selected_gaze_vec, reference_gaze_vec), -1.0, 1.0)
+						frame_angle = np.degrees(np.arccos(dot_val))
+						angle_history.append(frame_angle)
+						angle_history = angle_history[-smooth_window:]
+						frame_angle_smooth = float(np.mean(angle_history))
+
+						if is_lookat:
+							if frame_angle_smooth > angle_exit:
+								is_lookat = False
+						else:
+							if frame_angle_smooth < angle_enter:
+								is_lookat = True
+
+					missed_counter = 0
+
+			if not has_valid_gaze:
+				missed_counter += 1
+				if missed_counter > hold_missed:
+					is_lookat = False
+
+			label_text = "LookAt" if is_lookat else "NotLookAt"
+			label_color = (60, 210, 60) if is_lookat else (40, 60, 235)
+			cv2.putText(image_original, label_text, (30, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, label_color, 3, cv2.LINE_AA)
+			if args.draw_angle and frame_angle_smooth is not None:
+				cv2.putText(
+					image_original,
+					f"Angle: {frame_angle_smooth:.2f} deg",
+					(30, 85),
+					cv2.FONT_HERSHEY_SIMPLEX,
+					0.9,
+					(255, 255, 255),
+					2,
+					cv2.LINE_AA,
+				)
 	
 
 				if write_image or frame_idx % save_freq == 0:
